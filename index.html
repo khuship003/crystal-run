@@ -1,0 +1,167 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Crystal Run</title>
+<style>
+  body{margin:0;overflow:hidden;background:#0b0d1a;font-family:system-ui,sans-serif;color:#fff}
+  #hud{position:fixed;top:14px;left:18px;font-size:18px;line-height:1.5;text-shadow:0 0 6px #000}
+  #msg{position:fixed;inset:0;display:flex;align-items:center;justify-content:center;text-align:center;font-size:22px;background:rgba(5,6,15,.6)}
+  #msg small{display:block;margin-top:10px;opacity:.7;font-size:15px}
+</style>
+<script type="importmap">
+{"imports":{
+  "three":"https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+  "three/addons/":"https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"}}
+</script>
+</head>
+<body>
+<div id="hud"></div>
+<div id="msg"><div>CRYSTAL RUN<small>Move: WASD / arrows / mouse &nbsp;|&nbsp; Space to start<br>Collect crystals, dodge asteroids</small></div></div>
+<script type="module">
+import * as THREE from 'three';
+import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+
+// ---- 1. Model config: put your Vi3W exports (.glb) in ./models/ ----
+const MODELS = {
+  ship:    { file: 'models/ship.glb',     size: 1.8, rotY: 0 },  // try Math.PI, Math.PI/2 or -Math.PI/2 if the nose points the wrong way
+  rock:    { file: 'models/asteroid.glb', size: 1.8 },
+  crystal: { file: 'models/crystal.glb',  size: 1.0 },
+};
+const FALLBACK = {
+  ship:    () => new THREE.Mesh(new THREE.ConeGeometry(.5, 1.8, 5).rotateX(-Math.PI/2), new THREE.MeshStandardMaterial({color:0x4fc3f7})),
+  rock:    () => new THREE.Mesh(new THREE.IcosahedronGeometry(.9, 0), new THREE.MeshStandardMaterial({color:0x8d6e63, flatShading:true})),
+  crystal: () => new THREE.Mesh(new THREE.OctahedronGeometry(.5), new THREE.MeshStandardMaterial({color:0xff4dd2, emissive:0x771166})),
+};
+
+const loader = new GLTFLoader();
+const templates = {};
+async function loadModel(key) {
+  const { file, size, rotY = 0 } = MODELS[key];
+  let obj;
+  try { obj = (await loader.loadAsync(file)).scene; }
+  catch { obj = FALLBACK[key](); }
+  // normalise: scale to `size`, centre on origin
+  const box = new THREE.Box3().setFromObject(obj);
+  const dim = box.getSize(new THREE.Vector3());
+  obj.scale.multiplyScalar(size / Math.max(dim.x, dim.y, dim.z));
+  const c = new THREE.Box3().setFromObject(obj).getCenter(new THREE.Vector3());
+  obj.position.sub(c);
+  const g = new THREE.Group(); g.add(obj);
+  obj.rotation.y = rotY;
+  return g;
+}
+
+// ---- 2. Scene ----
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setSize(innerWidth, innerHeight);
+document.body.appendChild(renderer.domElement);
+const scene = new THREE.Scene();
+scene.fog = new THREE.Fog(0x0b0d1a, 20, 70);
+const camera = new THREE.PerspectiveCamera(70, innerWidth/innerHeight, .1, 200);
+camera.position.set(0, 1.5, 7);
+scene.add(new THREE.HemisphereLight(0xaaccff, 0x222244, 1.2));
+const sun = new THREE.DirectionalLight(0xffffff, 2); sun.position.set(3, 5, 4); scene.add(sun);
+
+const starGeo = new THREE.BufferGeometry();
+starGeo.setAttribute('position', new THREE.Float32BufferAttribute(Array.from({length:900}, (_, i) => (i%3===2 ? -Math.random()*120 : (Math.random()-.5)*60)), 3));
+const stars = new THREE.Points(starGeo, new THREE.PointsMaterial({ size: .15, color: 0xffffff }));
+scene.add(stars);
+
+addEventListener('resize', () => {
+  renderer.setSize(innerWidth, innerHeight);
+  camera.aspect = innerWidth/innerHeight; camera.updateProjectionMatrix();
+});
+
+// ---- 3. Input ----
+const keys = {}; const target = new THREE.Vector2();
+addEventListener('keydown', e => { keys[e.code] = true; if (e.code === 'Space') start(); });
+addEventListener('keyup',   e => keys[e.code] = false);
+addEventListener('mousemove', e => {
+  target.set((e.clientX/innerWidth - .5) * 12, -(e.clientY/innerHeight - .5) * 7);
+});
+
+// ---- 4. Game state ----
+const BOUNDS = { x: 6, y: 3.5 };
+let ship, items = [], score = 0, lives = 3, speed = 18, spawnT = 0, state = 'menu', invuln = 0;
+const hud = document.getElementById('hud'), msg = document.getElementById('msg');
+
+function start() {
+  if (state === 'playing') return;
+  items.forEach(i => scene.remove(i.mesh)); items = [];
+  score = 0; lives = 3; speed = 18; invuln = 0; target.set(0, 0); ship.position.set(0, 0, 0);
+  state = 'playing'; msg.style.display = 'none';
+}
+
+function spawn() {
+  const isRock = Math.random() < .6;
+  const mesh = templates[isRock ? 'rock' : 'crystal'].clone(true);
+  mesh.position.set((Math.random()*2-1)*BOUNDS.x, (Math.random()*2-1)*BOUNDS.y, -80);
+  scene.add(mesh);
+  items.push({ mesh, rock: isRock, r: isRock ? .9 : .6, spin: (Math.random()-.5)*3 });
+}
+
+function gameOver() {
+  state = 'over';
+  msg.innerHTML = `<div>GAME OVER<small>Score: ${score}<br>Press Space to retry</small></div>`;
+  msg.style.display = 'flex';
+}
+
+// ---- 5. Loop ----
+const clock = new THREE.Clock();
+function tick() {
+  const dt = Math.min(clock.getDelta(), .05);
+  const t = clock.elapsedTime;
+
+  if (state === 'playing') {
+    if (keys.KeyA || keys.ArrowLeft)  target.x -= 14*dt;
+    if (keys.KeyD || keys.ArrowRight) target.x += 14*dt;
+    if (keys.KeyW || keys.ArrowUp)    target.y += 10*dt;
+    if (keys.KeyS || keys.ArrowDown)  target.y -= 10*dt;
+    target.x = THREE.MathUtils.clamp(target.x, -BOUNDS.x, BOUNDS.x);
+    target.y = THREE.MathUtils.clamp(target.y, -BOUNDS.y, BOUNDS.y);
+
+    const px = ship.position.x;
+    ship.position.x += (target.x - ship.position.x) * Math.min(1, 8*dt);
+    ship.position.y += (target.y - ship.position.y) * Math.min(1, 8*dt);
+    ship.rotation.z = THREE.MathUtils.lerp(ship.rotation.z, -(ship.position.x - px) * 6, .2);
+
+    speed += dt * .4;
+    spawnT -= dt;
+    if (spawnT <= 0) { spawn(); spawnT = Math.max(.25, 1.0 - speed/60); }
+
+    invuln = Math.max(0, invuln - dt);
+    ship.visible = invuln <= 0 || Math.floor(t*12) % 2 === 0;
+
+    for (const it of items) {
+      it.mesh.position.z += speed * dt;
+      it.mesh.rotation.y += it.spin * dt;
+      it.mesh.rotation.x += it.spin * .5 * dt;
+      if (!it.dead && it.mesh.position.z > -1 && it.mesh.position.z < 1.2 &&
+          it.mesh.position.distanceTo(ship.position) < it.r + .7) {
+        if (it.rock) {
+          if (invuln <= 0) { lives--; invuln = 1.5; if (lives <= 0) gameOver(); }
+        } else { score += 10; it.dead = true; }
+        if (!it.rock) it.dead = true;
+      }
+    }
+    items = items.filter(it => {
+      const gone = it.dead || it.mesh.position.z > 10;
+      if (gone) scene.remove(it.mesh);
+      return !gone;
+    });
+    hud.innerHTML = `Score: ${score}<br>Lives: ${'♥'.repeat(Math.max(lives,0))}`;
+  }
+
+  stars.position.z = (stars.position.z + speed * dt * .5) % 40;
+  renderer.render(scene, camera);
+  requestAnimationFrame(tick);
+}
+
+// ---- 6. Boot ----
+for (const k of Object.keys(MODELS)) templates[k] = await loadModel(k);
+ship = templates.ship; scene.add(ship);
+tick();
+</script>
+</body>
+</html>
