@@ -6,7 +6,7 @@ Fly a ship down a space tunnel, collect crystals, and dodge asteroids. The game 
 
 Play
 
-Live: [your GitHub Pages or Netlify link]
+Live: (https://khuship003.github.io/crystal-run/)
 
 Run locally (the browser needs a server to load the models):
 
